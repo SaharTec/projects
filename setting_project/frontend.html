@@ -17,9 +17,8 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useRef } = React;
+    const { useState, useRef, useEffect } = React;
 
-    // אייקונים פשוטים
     const Upload = () => (
       <svg className="w-10 h-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
@@ -29,12 +28,6 @@
     const Users = ({ className }) => (
       <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-      </svg>
-    );
-
-    const Table = ({ className }) => (
-      <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h18M3 14h18m-9-4v8m-7 0h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
       </svg>
     );
 
@@ -63,7 +56,15 @@
       </svg>
     );
 
+    const AlertCircle = ({ className }) => (
+      <svg className={className} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+      </svg>
+    );
+
     function App() {
+      const [knightTableCount, setKnightTableCount] = useState(0);
+      const [knightGroup, setKnightGroup] = useState('');
       const [tableType, setTableType] = useState('regular');
       const [seatCount, setSeatCount] = useState(10);
       const [file, setFile] = useState(null);
@@ -71,6 +72,9 @@
       const [status, setStatus] = useState('idle');
       const [resultMessage, setResultMessage] = useState('');
       const [downloadUrl, setDownloadUrl] = useState('');
+      const [analysisData, setAnalysisData] = useState(null);
+      const [parentPreference, setParentPreference] = useState('together');
+      const [showParentDecision, setShowParentDecision] = useState(false);
       const fileInputRef = useRef(null);
 
       const API_URL = 'http://localhost:5000';
@@ -105,7 +109,7 @@
         validateAndSetFile(selectedFile);
       };
 
-      const validateAndSetFile = (selectedFile) => {
+      const validateAndSetFile = async (selectedFile) => {
         if (selectedFile) {
           const fileType = selectedFile.name.split('.').pop().toLowerCase();
           if (fileType === 'xlsx' || fileType === 'xls') {
@@ -113,9 +117,43 @@
             setStatus('idle');
             setResultMessage('');
             setDownloadUrl('');
+            
+            // Analyze file for parent groups
+            await analyzeFile(selectedFile);
           } else {
             alert('אנא בחר קובץ אקסל תקין (xlsx, xls)');
           }
+        }
+      };
+
+      const analyzeFile = async (fileToAnalyze) => {
+        const formData = new FormData();
+        formData.append('file', fileToAnalyze);
+
+        try {
+          const response = await fetch(`${API_URL}/api/analyze`, {
+            method: 'POST',
+            body: formData
+          });
+
+          const result = await response.json();
+          
+          if (result.success) {
+            setAnalysisData(result.analysis);
+            
+            // Check if we need to show parent decision dialog
+            const brideParents = result.analysis.bride.parent_info;
+            const groomParents = result.analysis.groom.parent_info;
+            
+            if ((brideParents && brideParents.needs_decision) || 
+                (groomParents && groomParents.needs_decision)) {
+              setShowParentDecision(true);
+            } else {
+              setShowParentDecision(false);
+            }
+          }
+        } catch (error) {
+          console.error('Error analyzing file:', error);
         }
       };
 
@@ -132,6 +170,9 @@
         formData.append('file', file);
         formData.append('table_type', tableType);
         formData.append('seats_per_table', seatCount);
+        formData.append('knight_table_count', knightTableCount);
+        formData.append('knight_group', knightGroup);
+        formData.append('parent_preference', parentPreference);
 
         try {
           const response = await fetch(`${API_URL}/api/process`, {
@@ -181,57 +222,69 @@
             </div>
 
             <div className="p-8 space-y-8">
-              
-              <section>
-                <h2 className="text-lg font-semibold text-gray-700 mb-4 flex items-center gap-2">
-                  <Table className="w-5 h-5 text-blue-600" />
-                  סוג שולחן
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  
-                  <button
-                    onClick={() => handleTableTypeChange('regular')}
-                    className={`p-4 rounded-xl border-2 transition-all duration-200 flex flex-col items-center gap-3 text-center ${
-                      tableType === 'regular'
-                        ? 'border-blue-500 bg-blue-50 text-blue-700 shadow-sm'
-                        : 'border-gray-200 hover:border-blue-200 text-gray-600'
-                    }`}
-                  >
-                    <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center shadow-sm">
-                      <Users className={`w-6 h-6 ${tableType === 'regular' ? 'text-blue-600' : 'text-gray-400'}`} />
-                    </div>
-                    <div>
-                      <div className="font-bold">שולחן רגיל</div>
-                      <div className="text-sm opacity-70">10 עד 12 מוזמנים</div>
-                    </div>
-                    {tableType === 'regular' && <CheckCircle className="w-5 h-5 text-blue-500 mt-1" />}
-                  </button>
 
-                  <button
-                    onClick={() => handleTableTypeChange('knight')}
-                    className={`p-4 rounded-xl border-2 transition-all duration-200 flex flex-col items-center gap-3 text-center ${
-                      tableType === 'knight'
-                        ? 'border-purple-500 bg-purple-50 text-purple-700 shadow-sm'
-                        : 'border-gray-200 hover:border-purple-200 text-gray-600'
-                    }`}
-                  >
-                    <div className="w-12 h-12 rounded-full bg-white flex items-center justify-center shadow-sm">
-                      <div className="flex gap-1">
-                        <Users className={`w-5 h-5 ${tableType === 'knight' ? 'text-purple-600' : 'text-gray-400'}`} />
-                        <Users className={`w-5 h-5 ${tableType === 'knight' ? 'text-purple-600' : 'text-gray-400'}`} />
-                      </div>
+              {/* Parent Groups Decision Alert */}
+              {showParentDecision && analysisData && (
+                <div className="bg-yellow-50 border-2 border-yellow-300 rounded-xl p-6">
+                  <div className="flex items-start gap-3 mb-4">
+                    <AlertCircle className="w-6 h-6 text-yellow-600 shrink-0 mt-1" />
+                    <div className="flex-1">
+                      <h3 className="font-bold text-yellow-800 text-lg mb-2">
+                        נדרשת החלטה לגבי משפחה אבא ואמא
+                      </h3>
+                      
+                      {analysisData.bride.parent_info && analysisData.bride.parent_info.needs_decision && (
+                        <div className="mb-3 text-sm text-yellow-800">
+                          <strong>צד הכלה:</strong> משפחה אבא ({analysisData.bride.parent_info.aba_count} מוזמנים) 
+                          + משפחה אמא ({analysisData.bride.parent_info.ima_count} מוזמנים) 
+                          = סה"כ {analysisData.bride.parent_info.total} מוזמנים
+                        </div>
+                      )}
+                      
+                      {analysisData.groom.parent_info && analysisData.groom.parent_info.needs_decision && (
+                        <div className="mb-3 text-sm text-yellow-800">
+                          <strong>צד החתן:</strong> משפחה אבא ({analysisData.groom.parent_info.aba_count} מוזמנים) 
+                          + משפחה אמא ({analysisData.groom.parent_info.ima_count} מוזמנים) 
+                          = סה"כ {analysisData.groom.parent_info.total} מוזמנים
+                        </div>
+                      )}
+
+                      <p className="text-sm text-yellow-700 mb-4">
+                        הכמות גדולה מ-12 וקטנה מ-22. איך תרצה לסדר אותם?
+                      </p>
                     </div>
-                    <div>
-                      <div className="font-bold">שולחן אביר</div>
-                      <div className="text-sm opacity-70">קבוע - 22 מוזמנים</div>
-                    </div>
-                    {tableType === 'knight' && <CheckCircle className="w-5 h-5 text-purple-500 mt-1" />}
-                  </button>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-3 p-3 bg-white rounded-lg border-2 border-yellow-200 cursor-pointer hover:bg-yellow-50">
+                      <input
+                        type="radio"
+                        name="parentPreference"
+                        value="knight"
+                        checked={parentPreference === 'knight'}
+                        onChange={(e) => setParentPreference(e.target.value)}
+                        className="w-4 h-4"
+                      />
+                      <span className="font-medium">שולחן אביר אחד (22 מקומות)</span>
+                    </label>
+
+                    <label className="flex items-center gap-3 p-3 bg-white rounded-lg border-2 border-yellow-200 cursor-pointer hover:bg-yellow-50">
+                      <input
+                        type="radio"
+                        name="parentPreference"
+                        value="separate"
+                        checked={parentPreference === 'separate'}
+                        onChange={(e) => setParentPreference(e.target.value)}
+                        className="w-4 h-4"
+                      />
+                      <span className="font-medium">2 שולחנות רגילים נפרדים</span>
+                    </label>
+                  </div>
                 </div>
-              </section>
+              )}
 
               <section className={`transition-all duration-300 ${tableType === 'regular' ? 'opacity-100' : 'opacity-50 grayscale pointer-events-none'}`}>
-                 <h2 className="text-lg font-semibold text-gray-700 mb-4">כמות אנשים בשולחן</h2>
+                 <h2 className="text-lg font-semibold text-gray-700 mb-4">כמות אנשים בשולחן רגיל</h2>
                  <div className="bg-gray-50 p-6 rounded-xl border border-gray-200">
                    <div className="flex justify-between mb-2">
                      <span className="text-sm font-medium text-gray-500">10 אנשים</span>
@@ -253,6 +306,44 @@
                      </span>
                    </div>
                  </div>
+              </section>
+
+              <section className="bg-purple-50 border border-purple-200 rounded-xl p-6">
+                <h2 className="text-lg font-semibold text-purple-700 mb-4">
+                  שולחנות אביר – הגדרות מתקדמות
+                </h2>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      מספר שולחנות אביר
+                    </label>
+                    <input
+                      type="number"
+                      min="0"
+                      value={knightTableCount}
+                      onChange={(e) => setKnightTableCount(parseInt(e.target.value) || 0)}
+                      className="w-full p-2 border rounded-lg"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                      קרבה לשיבוץ בשולחן אביר
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="לדוגמה: משפחה"
+                      value={knightGroup}
+                      onChange={(e) => setKnightGroup(e.target.value)}
+                      className="w-full p-2 border rounded-lg"
+                    />
+                  </div>
+                </div>
+
+                <p className="text-xs text-purple-700 mt-3">
+                  אם מספר שולחנות אביר הוא 0 – האפשרות מבוטלת
+                </p>
               </section>
 
               <section>
@@ -293,7 +384,7 @@
                         <div className="text-sm text-green-700">הקובץ נטען בהצלחה</div>
                       </div>
                       <button 
-                        onClick={(e) => { e.stopPropagation(); setFile(null); }}
+                        onClick={(e) => { e.stopPropagation(); setFile(null); setShowParentDecision(false); }}
                         className="absolute top-2 left-2 text-xs text-red-500 hover:text-red-700 font-medium px-2 py-1 bg-white rounded shadow-sm"
                       >
                         הסר

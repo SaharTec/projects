@@ -6,10 +6,11 @@ import os
 import io
 from datetime import datetime
 
-app = Flask(__name__)
-CORS(app)  # מאפשר קריאות מה-React frontend
+NO_FAMILY_SPLIT = True
 
-# תיקיות לשמירת קבצים
+app = Flask(__name__)
+CORS(app)
+
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'outputs'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -19,9 +20,7 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 def read_and_split_excel(file_path, sheet_name="רשימת מוזמנים"):
     """
     קריאת קובץ אקסל/CSV וחלוקה לשני DataFrames (צד כלה וצד חתן)
-    כאשר הם מופיעים זה לצד זה באותה שורה.
     """
-    # 1. טעינת הקובץ בהתאם לסוגו
     if file_path.endswith('.csv'):
         df = pd.read_csv(file_path, header=None)
     else:
@@ -31,9 +30,7 @@ def read_and_split_excel(file_path, sheet_name="רשימת מוזמנים"):
     groom_col = None
     title_row_idx = None
     
-    # 2. סריקת הקובץ למציאת המיקום (שורה ועמודה) של הכותרות "הצד של..."
     for r_idx, row in df.iterrows():
-        # המרת השורה לרשימה של טקסטים כדי שנוכל לחפש בה
         row_values = row.astype(str).tolist()
         
         for c_idx, val in enumerate(row_values):
@@ -44,42 +41,26 @@ def read_and_split_excel(file_path, sheet_name="רשימת מוזמנים"):
                 groom_col = c_idx
                 title_row_idx = r_idx 
 
-        # אם מצאנו את שני הצדדים, עוצרים את החיפוש
         if bride_col is not None and groom_col is not None:
             break
             
-    # בדיקה שמצאנו הכל
     if bride_col is None or groom_col is None:
         raise ValueError("לא נמצאו הכותרות 'הצד של הכלה' ו'הצד של החתן' בקובץ")
     
-    # 3. חישוב מיקום שורת כותרות העמודות (שם, טלפון, קרבה...)
-    # ההנחה היא שהן נמצאות בדיוק שורה אחת מתחת לכותרת הראשית
     headers_row_idx = title_row_idx + 1
     
-    # 4. חיתוך הטבלה (Slicing) ויצירת טבלאות נפרדות
-    
-    # --- יצירת טבלה לצד הכלה ---
-    # לוקחים נתונים מהשורה שאחרי הכותרות, ומהעמודה של הכלה עד העמודה של החתן
     bride_df = df.iloc[headers_row_idx+1:, bride_col:groom_col].copy()
-    # לוקחים את שמות העמודות משורת הכותרות
     bride_df.columns = df.iloc[headers_row_idx, bride_col:groom_col].tolist()
     
-    # --- יצירת טבלה לצד החתן ---
-    # לוקחים נתונים מהעמודה של החתן ועד הסוף
     groom_df = df.iloc[headers_row_idx+1:, groom_col:].copy()
     groom_df.columns = df.iloc[headers_row_idx, groom_col:].tolist()
     
-    # 5. תיקון קריטי: ניקוי רווחים משמות העמודות
-    # זה מה שפותר את השגיאה עם "שם מלא " (הופך אותו ל-"שם מלא")
     bride_df.columns = bride_df.columns.astype(str).str.strip()
     groom_df.columns = groom_df.columns.astype(str).str.strip()
     
-    # 6. ניקוי שורות ריקות וסינון
-    # מחיקת שורות שכולן ריקות (למשל רווחים בין פסקאות באקסל)
     bride_df = bride_df.dropna(how='all')
     groom_df = groom_df.dropna(how='all')
     
-    # סינון שורות שאין בהן שם מוזמן (כדי להעיף שורות סיכום או לכלוך)
     if 'שם מלא' in bride_df.columns:
         bride_df = bride_df[bride_df['שם מלא'].notna()]
     
@@ -91,7 +72,7 @@ def read_and_split_excel(file_path, sheet_name="רשימת מוזמנים"):
 
 def apply_filters(df, filters):
     """
-    החלת פילטרים על DataFrame בשמות עברית
+    החלת פילטרים על DataFrame
     """
     filtered_df = df.copy()
     
@@ -102,55 +83,198 @@ def apply_filters(df, filters):
     return filtered_df.reset_index(drop=True)
 
 
-def group_into_tables(df, table_size):
+def group_into_tables(df, table_size, parent_preference='separate'):
     """
-    קיבוץ אורחים לשולחנות לפי קרבה וכמות מוזמנים
+    מקבץ מוזמנים לשולחנות עם טיפול מיוחד למשפחה אבא ואמא
+    parent_preference: 'together', 'separate', or 'knight'
     """
-    grouped = df.groupby('קרבה', dropna=False)
+    if df.empty:
+        return []
     
     tables = []
     table_number = 1
     
-    for kraba, group in grouped:
-        current_table = {
-            'guests': [],
-            'total_count': 0,
-            'kraba': kraba
-        }
+    # הפרד משפחה אבא ואמא משאר הקרבות
+    parent_groups = ['משפחה אבא', 'משפחה אמא']
+    parent_df = df[df['קרבה'].isin(parent_groups)].copy()
+    other_df = df[~df['קרבה'].isin(parent_groups)].copy()
+    
+    # טיפול במשפחה אבא ואמא
+    if not parent_df.empty:
+        aba_df = parent_df[parent_df['קרבה'] == 'משפחה אבא']
+        ima_df = parent_df[parent_df['קרבה'] == 'משפחה אמא']
+        
+        aba_count = int(aba_df['מוזמנים'].fillna(1).astype(int).sum()) if not aba_df.empty else 0
+        ima_count = int(ima_df['מוזמנים'].fillna(1).astype(int).sum()) if not ima_df.empty else 0
+        total_parents = aba_count + ima_count
+        
+        if parent_preference == 'together' and total_parents <= table_size:
+            # שולחן משותף
+            all_names = []
+            for _, row in parent_df.iterrows():
+                all_names.append(row['שם מלא'])
+            
+            tables.append({
+                'מספר שולחן': table_number,
+                'סוג שולחן': 'רגיל',
+                'קרבה': 'משפחה אבא + משפחה אמא',
+                'שמות מוזמנים': ', '.join(all_names),
+                'כמות מוזמנים בשולחן': total_parents
+            })
+            table_number += 1
+            
+        elif parent_preference == 'knight' and 12 < total_parents <= 22:
+            # שולחן אביר למשפחות
+            all_names = []
+            for _, row in parent_df.iterrows():
+                all_names.append(row['שם מלא'])
+            
+            tables.append({
+                'מספר שולחן': f'אביר {table_number}',
+                'סוג שולחן': 'אביר',
+                'קרבה': 'משפחה אבא + משפחה אמא',
+                'שמות מוזמנים': ', '.join(all_names),
+                'כמות מוזמנים בשולחן': total_parents
+            })
+            table_number += 1
+            
+        else:
+            # שולחנות נפרדים
+            for relation, group in parent_df.groupby('קרבה', dropna=False):
+                current_table_guests = []
+                current_table_count = 0
+                
+                for _, row in group.iterrows():
+                    guest_name = row['שם מלא']
+                    guest_count = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
+                    
+                    if current_table_count + guest_count > table_size and current_table_guests:
+                        tables.append({
+                            'מספר שולחן': table_number,
+                            'סוג שולחן': 'רגיל',
+                            'קרבה': relation,
+                            'שמות מוזמנים': ', '.join(current_table_guests),
+                            'כמות מוזמנים בשולחן': current_table_count
+                        })
+                        table_number += 1
+                        current_table_guests = []
+                        current_table_count = 0
+                    
+                    current_table_guests.append(guest_name)
+                    current_table_count += guest_count
+                
+                if current_table_guests:
+                    tables.append({
+                        'מספר שולחן': table_number,
+                        'סוג שולחן': 'רגיל',
+                        'קרבה': relation,
+                        'שמות מוזמנים': ', '.join(current_table_guests),
+                        'כמות מוזמנים בשולחן': current_table_count
+                    })
+                    table_number += 1
+    
+    # טיפול בשאר הקרבות
+    grouped = other_df.groupby('קרבה', dropna=False)
+    
+    for relation, group in grouped:
+        current_table_guests = []
+        current_table_count = 0
         
         for _, row in group.iterrows():
             guest_name = row['שם מלא']
             guest_count = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
             
-            # אם מוסיפים את האורח הזה חורגים מגודל השולחן, פותחים שולחן חדש
-            if current_table['total_count'] + guest_count > table_size and current_table['guests']:
+            if current_table_count + guest_count > table_size and current_table_guests:
                 tables.append({
                     'מספר שולחן': table_number,
-                    'קרבה': current_table['kraba'],
-                    'שמות מוזמנים': ', '.join(current_table['guests']),
-                    'כמות מוזמנים בשולחן': current_table['total_count']
+                    'סוג שולחן': 'רגיל',
+                    'קרבה': relation,
+                    'שמות מוזמנים': ', '.join(current_table_guests),
+                    'כמות מוזמנים בשולחן': current_table_count
                 })
                 table_number += 1
-                current_table = {
-                    'guests': [],
-                    'total_count': 0,
-                    'kraba': kraba
-                }
+                current_table_guests = []
+                current_table_count = 0
             
-            current_table['guests'].append(guest_name)
-            current_table['total_count'] += guest_count
+            current_table_guests.append(guest_name)
+            current_table_count += guest_count
         
-        # הוספת השולחן האחרון של קבוצת הקרבה
-        if current_table['guests']:
+        if current_table_guests:
             tables.append({
                 'מספר שולחן': table_number,
-                'קרבה': current_table['kraba'],
-                'שמות מוזמנים': ', '.join(current_table['guests']),
-                'כמות מוזמנים בשולחן': current_table['total_count']
+                'סוג שולחן': 'רגיל',
+                'קרבה': relation,
+                'שמות מוזמנים': ', '.join(current_table_guests),
+                'כמות מוזמנים בשולחן': current_table_count
             })
             table_number += 1
     
     return tables
+
+
+def check_parent_groups(df):
+    """
+    בדיקת גודל קבוצות משפחה אבא ואמא
+    """
+    parent_groups = ['משפחה אבא', 'משפחה אמא']
+    parent_df = df[df['קרבה'].isin(parent_groups)]
+    
+    if parent_df.empty:
+        return None
+    
+    aba_df = parent_df[parent_df['קרבה'] == 'משפחה אבא']
+    ima_df = parent_df[parent_df['קרבה'] == 'משפחה אמא']
+    
+    aba_count = int(aba_df['מוזמנים'].fillna(1).astype(int).sum()) if not aba_df.empty else 0
+    ima_count = int(ima_df['מוזמנים'].fillna(1).astype(int).sum()) if not ima_df.empty else 0
+    
+    return {
+        'aba_count': aba_count,
+        'ima_count': ima_count,
+        'aba_needs_decision': 12 < aba_count <= 22,
+        'ima_needs_decision': 12 < ima_count <= 22
+    }
+
+
+@app.route('/api/analyze', methods=['POST'])
+def analyze_file():
+    """
+    ניתוח ראשוני של הקובץ
+    """
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'לא הועלה קובץ'}), 400
+        
+        file = request.files['file']
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"analyze_{timestamp}.xlsx"
+        file_path = os.path.join(UPLOAD_FOLDER, filename)
+        file.save(file_path)
+        
+        bride_df, groom_df = read_and_split_excel(file_path)
+        
+        analysis = {
+            'bride': {
+                'count': len(bride_df),
+                'kraba_values': bride_df['קרבה'].unique().tolist() if 'קרבה' in bride_df.columns else [],
+                'total_guests': int(bride_df['מוזמנים'].sum()) if 'מוזמנים' in bride_df.columns else 0,
+                'parent_info': check_parent_groups(bride_df)
+            },
+            'groom': {
+                'count': len(groom_df),
+                'kraba_values': groom_df['קרבה'].unique().tolist() if 'קרבה' in groom_df.columns else [],
+                'total_guests': int(groom_df['מוזמנים'].sum()) if 'מוזמנים' in groom_df.columns else 0,
+                'parent_info': check_parent_groups(groom_df)
+            }
+        }
+        
+        return jsonify({
+            'success': True,
+            'analysis': analysis
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/process', methods=['POST'])
@@ -159,47 +283,57 @@ def process_seating():
     API endpoint לעיבוד הקובץ וסידור השולחנות
     """
     try:
-        # קבלת הקובץ והפרמטרים
         if 'file' not in request.files:
             return jsonify({'error': 'לא הועלה קובץ'}), 400
         
         file = request.files['file']
         table_type = request.form.get('table_type', 'regular')
         seats_per_table = int(request.form.get('seats_per_table', 10))
-        
-        # פילטרים אופציונליים
+        knight_table_count = int(request.form.get('knight_table_count', 0))
+        knight_group = request.form.get('knight_group', '')
+        parent_preference = request.form.get('parent_preference', 'together')
+
         kraba_filter = request.form.get('kraba_filter', '')
-        name_filter = request.form.get('name_filter', '')
-        guests_filter = request.form.get('guests_filter', '')
+        excluded_names = request.form.get('excluded_names', '')
+        min_guests = request.form.get('min_guests', '')
+        max_guests = request.form.get('max_guests', '')
         
-        # שמירת הקובץ
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         filename = f"input_{timestamp}.xlsx"
         file_path = os.path.join(UPLOAD_FOLDER, filename)
         file.save(file_path)
         
-        # קריאת הנתונים
         bride_df, groom_df = read_and_split_excel(file_path)
         
-        # בניית פילטרים
-        filters = {}
         if kraba_filter:
-            filters['קרבה'] = [k.strip() for k in kraba_filter.split(',')]
-        if name_filter:
-            filters['שם מלא'] = [n.strip() for n in name_filter.split(',')]
-        if guests_filter:
-            filters['מוזמנים'] = [int(g.strip()) for g in guests_filter.split(',') if g.strip().isdigit()]
+            select_kraba = [k.strip() for k in kraba_filter.split('.')]
+            bride_df = bride_df[bride_df['קרבה'].isin(select_kraba)]
+            groom_df = groom_df[groom_df['קרבה'].isin(select_kraba)]
         
-        # החלת פילטרים
-        if filters:
-            bride_df = apply_filters(bride_df, filters)
-            groom_df = apply_filters(groom_df, filters)
+        if min_guests:
+            min_val = int(min_guests)
+            bride_df = bride_df[bride_df['מוזמנים'].fillna(1).astype(int) >= min_val]
+            groom_df = groom_df[groom_df['מוזמנים'].fillna(1).astype(int) >= min_val]
+
+        if max_guests:
+            max_val = int(max_guests)
+            bride_df = bride_df[bride_df['מוזמנים'].fillna(1).astype(int) <= max_val]
+            groom_df = groom_df[groom_df['מוזמנים'].fillna(1).astype(int) <= max_val]
+
+        bride_knight, bride_df = extract_knight_tables(
+            bride_df, knight_group, knight_table_count
+        )
+
+        groom_knight, groom_df = extract_knight_tables(
+            groom_df, knight_group, knight_table_count
+        )
         
-        # קיבוץ לשולחנות
-        bride_tables = group_into_tables(bride_df, seats_per_table)
-        groom_tables = group_into_tables(groom_df, seats_per_table)
+        bride_tables = group_into_tables(bride_df, seats_per_table, parent_preference)
+        groom_tables = group_into_tables(groom_df, seats_per_table, parent_preference)
+
+        bride_tables = bride_knight + bride_tables
+        groom_tables = groom_knight + groom_tables
         
-        # יצירת קובץ פלט
         output_filename = f"seating_arrangement_{timestamp}.xlsx"
         output_path = os.path.join(OUTPUT_FOLDER, output_filename)
         
@@ -210,7 +344,6 @@ def process_seating():
             bride_tables_df.to_excel(writer, sheet_name='הצד של הכלה', index=False)
             groom_tables_df.to_excel(writer, sheet_name='הצד של החתן', index=False)
         
-        # החזרת תוצאות
         return jsonify({
             'success': True,
             'message': 'הקובץ עובד בהצלחה!',
@@ -227,6 +360,51 @@ def process_seating():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+    
+
+def extract_knight_tables(df, knight_group, knight_table_count):
+    KNIGHT_TABLE_SIZE = 22
+
+    if knight_table_count <= 0 or not knight_group:
+        return [], df
+
+    knight_df = df[df['קרבה'] == knight_group].copy()
+
+    tables = []
+    used_seats = 0
+    table_number = 1
+    current_table = []
+
+    for _, row in knight_df.iterrows():
+        guest_count = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
+
+        if used_seats + guest_count > knight_table_count * KNIGHT_TABLE_SIZE:
+            break
+
+        if len(current_table) + guest_count >= KNIGHT_TABLE_SIZE:
+            tables.append({
+                'מספר שולחן': f"אביר {table_number}",
+                'קרבה': knight_group,
+                'שמות מוזמנים': ', '.join(current_table),
+                'כמות מוזמנים בשולחן': len(current_table)
+            })
+            table_number += 1
+            current_table = []
+
+        current_table.append(row['שם מלא'])
+        used_seats += guest_count
+
+    if current_table:
+        tables.append({
+            'מספר שולחן': f"אביר {table_number}",
+            'קרבה': knight_group,
+            'שמות מוזמנים': ', '.join(current_table),
+            'כמות מוזמנים בשולחן': len(current_table)
+        })
+
+    remaining_df = df.drop(knight_df.index)
+
+    return tables, remaining_df
 
 
 @app.route('/api/download/<filename>', methods=['GET'])
@@ -244,46 +422,6 @@ def download_file(filename):
         )
     except Exception as e:
         return jsonify({'error': str(e)}), 404
-
-
-@app.route('/api/analyze', methods=['POST'])
-def analyze_file():
-    """
-    ניתוח ראשוני של הקובץ להצגת אפשרויות פילטור
-    """
-    try:
-        if 'file' not in request.files:
-            return jsonify({'error': 'לא הועלה קובץ'}), 400
-        
-        file = request.files['file']
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        filename = f"analyze_{timestamp}.xlsx"
-        file_path = os.path.join(UPLOAD_FOLDER, filename)
-        file.save(file_path)
-        
-        bride_df, groom_df = read_and_split_excel(file_path)
-        
-        # איסוף ערכים ייחודיים לפילטרים
-        analysis = {
-            'bride': {
-                'count': len(bride_df),
-                'kraba_values': bride_df['קרבה'].unique().tolist() if 'קרבה' in bride_df.columns else [],
-                'total_guests': int(bride_df['מוזמנים'].sum()) if 'מוזמנים' in bride_df.columns else 0
-            },
-            'groom': {
-                'count': len(groom_df),
-                'kraba_values': groom_df['קרבה'].unique().tolist() if 'קרבה' in groom_df.columns else [],
-                'total_guests': int(groom_df['מוזמנים'].sum()) if 'מוזמנים' in groom_df.columns else 0
-            }
-        }
-        
-        return jsonify({
-            'success': True,
-            'analysis': analysis
-        })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/health', methods=['GET'])
