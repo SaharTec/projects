@@ -4,6 +4,7 @@ import pandas as pd
 from collections import defaultdict
 import os
 import io
+import json
 from datetime import datetime
 
 NO_FAMILY_SPLIT = True
@@ -82,133 +83,179 @@ def apply_filters(df, filters):
     
     return filtered_df.reset_index(drop=True)
 
+def find_oversized_groups(df, table_size):
+    overSized = []
 
-def group_into_tables(df, table_size, parent_preference='separate'):
+    if df.empty or 'קרבה' not in df.columns :
+        return overSized
+    
+    grouped =df.groupby('קרבה', dropna=False)
+
+    for relation , group in grouped :
+        if relation in ['משפחה אמא','משפחה אבא']: continue
+
+        total_guests = int(group['מוזמנים'].fillna(1).astype(int).sum())
+
+        if total_guests > table_size:
+            overSized.append({
+                'relation': relation,
+                'total_guests': total_guests,
+                'guests' : group['שם מלא'].tolist()
+            })
+    return overSized
+
+
+def group_into_tables(df, table_size, aba_preference='separate', ima_preference='separate',  oversized_decisions=None):
     """
-    מקבץ מוזמנים לשולחנות עם טיפול מיוחד למשפחה אבא ואמא
-    parent_preference: 'together', 'separate', or 'knight'
+    Groups guests into tables. 
+    Specific logic:
+    - If Aba/Ima <= 12: Force 1 regular table (even if table_size is 10).
+    - If Aba/Ima 13-22: Check preference (Knight vs Separate).
+    - Else: Standard separate tables.
     """
     if df.empty:
         return []
     
     tables = []
     table_number = 1
-    
-    # הפרד משפחה אבא ואמא משאר הקרבות
-    parent_groups = ['משפחה אבא', 'משפחה אמא']
-    parent_df = df[df['קרבה'].isin(parent_groups)].copy()
-    other_df = df[~df['קרבה'].isin(parent_groups)].copy()
-    
-    # טיפול במשפחה אבא ואמא
-    if not parent_df.empty:
-        aba_df = parent_df[parent_df['קרבה'] == 'משפחה אבא']
-        ima_df = parent_df[parent_df['קרבה'] == 'משפחה אמא']
-        
-        aba_count = int(aba_df['מוזמנים'].fillna(1).astype(int).sum()) if not aba_df.empty else 0
-        ima_count = int(ima_df['מוזמנים'].fillna(1).astype(int).sum()) if not ima_df.empty else 0
-        total_parents = aba_count + ima_count
-        
-        if parent_preference == 'together' and total_parents <= table_size:
-            # שולחן משותף
-            all_names = []
-            for _, row in parent_df.iterrows():
-                all_names.append(row['שם מלא'])
-            
-            tables.append({
-                'מספר שולחן': table_number,
-                'סוג שולחן': 'רגיל',
-                'קרבה': 'משפחה אבא + משפחה אמא',
-                'שמות מוזמנים': ', '.join(all_names),
-                'כמות מוזמנים בשולחן': total_parents
-            })
-            table_number += 1
-            
-        elif parent_preference == 'knight' and 12 < total_parents <= 22:
-            # שולחן אביר למשפחות
-            all_names = []
-            for _, row in parent_df.iterrows():
-                all_names.append(row['שם מלא'])
-            
+
+    oversized_config = {}
+    if oversized_decisions:
+        for decision in oversized_decisions:
+            oversized_config[decision['relation']] = decision['action']
+
+    for relation, group in grouped:
+        total_guests = int(group_df['מוזמנים'].fillna(1).astype(int).sum())
+
+        if relation in oversized_config:
+            action = oversized_config[relation]
+
+            if action == 'bigger_table':
+                all_names = group['שם מלא'].tolist()
             tables.append({
                 'מספר שולחן': f'אביר {table_number}',
                 'סוג שולחן': 'אביר',
-                'קרבה': 'משפחה אבא + משפחה אמא',
+                'קרבה': relation,
                 'שמות מוזמנים': ', '.join(all_names),
-                'כמות מוזמנים בשולחן': total_parents
+                'כמות מוזמנים בשולחן': total_guests
             })
             table_number += 1
-            
+            continue
+    
+    # helper function to process a specific family group
+    def process_special_group(group_name, preference, current_table_number):
+        group_df = df[df['קרבה'] == group_name]
+        if group_df.empty:
+            return [], current_table_number
+
+        group_count = int(group_df['מוזמנים'].fillna(1).astype(int).sum())
+        all_names = group_df['שם מלא'].tolist()
+        new_tables = []
+
+        # Logic 1: Small group (<= 12) -> Force 1 table
+        if group_count <= 12:
+            new_tables.append({
+                'מספר שולחן': current_table_number,
+                'סוג שולחן': 'רגיל',
+                'קרבה': group_name,
+                'שמות מוזמנים': ', '.join(all_names),
+                'כמות מוזמנים בשולחן': group_count
+            })
+            current_table_number += 1
+
+        # Logic 2: Medium group (13-22) AND user wants Knight -> Force 1 Knight table
+        elif 12 < group_count <= 22 and preference == 'knight':
+            new_tables.append({
+                'מספר שולחן': f'אביר {current_table_number}',
+                'סוג שולחן': 'אביר',
+                'קרבה': group_name,
+                'שמות מוזמנים': ', '.join(all_names),
+                'כמות מוזמנים בשולחן': group_count
+            })
+            current_table_number += 1
+
+        # Logic 3: Large group OR user wants separate -> Split into standard tables
         else:
-            # שולחנות נפרדים
-            for relation, group in parent_df.groupby('קרבה', dropna=False):
-                current_table_guests = []
-                current_table_count = 0
+            current_guests = []
+            current_count = 0
+            
+            for _, row in group_df.iterrows():
+                name = row['שם מלא']
+                guests = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
                 
-                for _, row in group.iterrows():
-                    guest_name = row['שם מלא']
-                    guest_count = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
-                    
-                    if current_table_count + guest_count > table_size and current_table_guests:
-                        tables.append({
-                            'מספר שולחן': table_number,
-                            'סוג שולחן': 'רגיל',
-                            'קרבה': relation,
-                            'שמות מוזמנים': ', '.join(current_table_guests),
-                            'כמות מוזמנים בשולחן': current_table_count
-                        })
-                        table_number += 1
-                        current_table_guests = []
-                        current_table_count = 0
-                    
-                    current_table_guests.append(guest_name)
-                    current_table_count += guest_count
-                
-                if current_table_guests:
-                    tables.append({
-                        'מספר שולחן': table_number,
+                if current_count + guests > table_size and current_guests:
+                    new_tables.append({
+                        'מספר שולחן': current_table_number,
                         'סוג שולחן': 'רגיל',
-                        'קרבה': relation,
-                        'שמות מוזמנים': ', '.join(current_table_guests),
-                        'כמות מוזמנים בשולחן': current_table_count
+                        'קרבה': group_name,
+                        'שמות מוזמנים': ', '.join(current_guests),
+                        'כמות מוזמנים בשולחן': current_count
                     })
-                    table_number += 1
-    
-    # טיפול בשאר הקרבות
+                    current_table_number += 1
+                    current_guests = []
+                    current_count = 0
+                
+                current_guests.append(name)
+                current_count += guests
+            
+            if current_guests:
+                new_tables.append({
+                    'מספר שולחן': current_table_number,
+                    'סוג שולחן': 'רגיל',
+                    'קרבה': group_name,
+                    'שמות מוזמנים': ', '.join(current_guests),
+                    'כמות מוזמנים בשולחן': current_count
+                })
+                current_table_number += 1
+                
+        return new_tables, current_table_number
+
+    # 1. Process Aba
+    aba_tables, table_number = process_special_group('משפחה אבא', aba_preference, table_number)
+    tables.extend(aba_tables)
+
+    # 2. Process Ima
+    ima_tables, table_number = process_special_group('משפחה אמא', ima_preference, table_number)
+    tables.extend(ima_tables)
+
+    # 3. Process Everyone Else
+    # Exclude Aba and Ima from the general pool
+    other_df = df[~df['קרבה'].isin(['משפחה אבא', 'משפחה אמא'])].copy()
     grouped = other_df.groupby('קרבה', dropna=False)
-    
+
     for relation, group in grouped:
-        current_table_guests = []
-        current_table_count = 0
+        current_guests = []
+        current_count = 0
         
         for _, row in group.iterrows():
-            guest_name = row['שם מלא']
-            guest_count = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
+            name = row['שם מלא']
+            guests = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
             
-            if current_table_count + guest_count > table_size and current_table_guests:
+            if current_count + guests > table_size and current_guests:
                 tables.append({
                     'מספר שולחן': table_number,
                     'סוג שולחן': 'רגיל',
                     'קרבה': relation,
-                    'שמות מוזמנים': ', '.join(current_table_guests),
-                    'כמות מוזמנים בשולחן': current_table_count
+                    'שמות מוזמנים': ', '.join(current_guests),
+                    'כמות מוזמנים בשולחן': current_count
                 })
                 table_number += 1
-                current_table_guests = []
-                current_table_count = 0
+                current_guests = []
+                current_count = 0
             
-            current_table_guests.append(guest_name)
-            current_table_count += guest_count
+            current_guests.append(name)
+            current_count += guests
         
-        if current_table_guests:
+        if current_guests:
             tables.append({
                 'מספר שולחן': table_number,
                 'סוג שולחן': 'רגיל',
                 'קרבה': relation,
-                'שמות מוזמנים': ', '.join(current_table_guests),
-                'כמות מוזמנים בשולחן': current_table_count
+                'שמות מוזמנים': ', '.join(current_guests),
+                'כמות מוזמנים בשולחן': current_count
             })
             table_number += 1
-    
+            
     return tables
 
 
@@ -285,16 +332,20 @@ def process_seating():
     try:
         if 'file' not in request.files:
             return jsonify({'error': 'לא הועלה קובץ'}), 400
-        
+
+        table_size = int(request.form.get('table_size', 10)) 
         file = request.files['file']
         table_type = request.form.get('table_type', 'regular')
         seats_per_table = int(request.form.get('seats_per_table', 10))
         knight_table_count = int(request.form.get('knight_table_count', 0))
         knight_group = request.form.get('knight_group', '')
-        parent_preference = request.form.get('parent_preference', 'together')
+        aba_preference = request.form.get('aba_preference', 'separate')
+        ima_preference = request.form.get('ima_preference', 'separate')
+        oversized_decisions_json = request.form.get('oversized_decisions', '[]')
+        oversized_decisions = json.loads(oversized_decisions_json)
+    
 
         kraba_filter = request.form.get('kraba_filter', '')
-        excluded_names = request.form.get('excluded_names', '')
         min_guests = request.form.get('min_guests', '')
         max_guests = request.form.get('max_guests', '')
         
@@ -304,6 +355,25 @@ def process_seating():
         file.save(file_path)
         
         bride_df, groom_df = read_and_split_excel(file_path)
+
+        bride_oversized = [d for d in oversized_decisions if d.get('side') == 'bride']
+        groom_oversized = [d for d in oversized_decisions if d.get('side') == 'groom']
+    
+        # NEW: Pass decisions to grouping function
+        bride_tables = group_into_tables(bride_df, seats_per_table, aba_preference, ima_preference, bride_oversized)
+
+        bride_oversized = find_oversized_groups(bride_df, table_size)
+        groom_oversized = find_oversized_groups(groom_df, table_size)
+
+        analysis = {
+        'bride': {
+            'oversized_groups': bride_oversized  # NEW!
+        },
+        'groom': {
+            'oversized_groups': groom_oversized  # NEW!
+        }
+    }
+    
         
         if kraba_filter:
             select_kraba = [k.strip() for k in kraba_filter.split('.')]
@@ -328,8 +398,8 @@ def process_seating():
             groom_df, knight_group, knight_table_count
         )
         
-        bride_tables = group_into_tables(bride_df, seats_per_table, parent_preference)
-        groom_tables = group_into_tables(groom_df, seats_per_table, parent_preference)
+        bride_tables = group_into_tables(bride_df, seats_per_table, aba_preference, ima_preference)
+        groom_tables = group_into_tables(groom_df, seats_per_table, aba_preference, ima_preference)
 
         bride_tables = bride_knight + bride_tables
         groom_tables = groom_knight + groom_tables

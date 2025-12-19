@@ -75,6 +75,8 @@
       const [analysisData, setAnalysisData] = useState(null);
       const [parentPreference, setParentPreference] = useState('together');
       const [showParentDecision, setShowParentDecision] = useState(false);
+      const [oversizedGroups, setOversizedGroups] = useState([]);
+      const [oversizedDecisions, setOversizedDecisions] = useState({});
       const fileInputRef = useRef(null);
 
       const API_URL = 'http://localhost:5000';
@@ -118,7 +120,7 @@
             setResultMessage('');
             setDownloadUrl('');
             
-            // Analyze file for parent groups
+            // Analyze file
             await analyzeFile(selectedFile);
           } else {
             alert('אנא בחר קובץ אקסל תקין (xlsx, xls)');
@@ -129,6 +131,7 @@
       const analyzeFile = async (fileToAnalyze) => {
         const formData = new FormData();
         formData.append('file', fileToAnalyze);
+        formData.append('table_size', seatCount);
 
         try {
           const response = await fetch(`${API_URL}/api/analyze`, {
@@ -141,7 +144,7 @@
           if (result.success) {
             setAnalysisData(result.analysis);
             
-            // Check if we need to show parent decision dialog
+            // Check for parent decisions
             const brideParents = result.analysis.bride.parent_info;
             const groomParents = result.analysis.groom.parent_info;
             
@@ -151,10 +154,37 @@
             } else {
               setShowParentDecision(false);
             }
+
+            // Check for oversized groups
+            const brideOversized = result.analysis.bride.oversized_groups || [];
+            const groomOversized = result.analysis.groom.oversized_groups || [];
+            
+            const allOversized = [
+              ...brideOversized.map(g => ({...g, side: 'bride'})),
+              ...groomOversized.map(g => ({...g, side: 'groom'}))
+            ];
+            
+            setOversizedGroups(allOversized);
+            
+            // Initialize decisions
+            const initialDecisions = {};
+            allOversized.forEach(group => {
+              const key = `${group.side}_${group.relation}`;
+              initialDecisions[key] = 'split';
+            });
+            setOversizedDecisions(initialDecisions);
           }
         } catch (error) {
           console.error('Error analyzing file:', error);
         }
+      };
+
+      const handleOversizedDecision = (side, relation, action) => {
+        const key = `${side}_${relation}`;
+        setOversizedDecisions(prev => ({
+          ...prev,
+          [key]: action
+        }));
       };
 
       const handleSubmit = async () => {
@@ -173,6 +203,14 @@
         formData.append('knight_table_count', knightTableCount);
         formData.append('knight_group', knightGroup);
         formData.append('parent_preference', parentPreference);
+        
+        // Add oversized decisions
+        const decisionsArray = Object.entries(oversizedDecisions).map(([key, action]) => {
+          const [side, ...relationParts] = key.split('_');
+          const relation = relationParts.join('_');
+          return { side, relation, action };
+        });
+        formData.append('oversized_decisions', JSON.stringify(decisionsArray));
 
         try {
           const response = await fetch(`${API_URL}/api/process`, {
@@ -195,7 +233,7 @@
           }
         } catch (error) {
           setStatus('error');
-          alert('שגיאה בתקשורת עם השרת. וודא ש-backend.py רץ על http://localhost:5000');
+          alert('שגיאה בתקשורת עם השרת. ווידא ש-backend.py רץ על http://localhost:5000');
           console.error(error);
         }
       };
@@ -236,16 +274,14 @@
                       {analysisData.bride.parent_info && analysisData.bride.parent_info.needs_decision && (
                         <div className="mb-3 text-sm text-yellow-800">
                           <strong>צד הכלה:</strong> משפחה אבא ({analysisData.bride.parent_info.aba_count} מוזמנים) 
-                          + משפחה אמא ({analysisData.bride.parent_info.ima_count} מוזמנים) 
-                          = סה"כ {analysisData.bride.parent_info.total} מוזמנים
+                          + משפחה אמא ({analysisData.bride.parent_info.ima_count} מוזמנים)
                         </div>
                       )}
                       
                       {analysisData.groom.parent_info && analysisData.groom.parent_info.needs_decision && (
                         <div className="mb-3 text-sm text-yellow-800">
                           <strong>צד החתן:</strong> משפחה אבא ({analysisData.groom.parent_info.aba_count} מוזמנים) 
-                          + משפחה אמא ({analysisData.groom.parent_info.ima_count} מוזמנים) 
-                          = סה"כ {analysisData.groom.parent_info.total} מוזמנים
+                          + משפחה אמא ({analysisData.groom.parent_info.ima_count} מוזמנים)
                         </div>
                       )}
 
@@ -279,6 +315,65 @@
                       />
                       <span className="font-medium">2 שולחנות רגילים נפרדים</span>
                     </label>
+                  </div>
+                </div>
+              )}
+
+              {/* Oversized Groups Alert */}
+              {oversizedGroups.length > 0 && (
+                <div className="bg-orange-50 border-2 border-orange-300 rounded-xl p-6">
+                  <div className="flex items-start gap-3 mb-4">
+                    <AlertCircle className="w-6 h-6 text-orange-600 shrink-0 mt-1" />
+                    <div className="flex-1">
+                      <h3 className="font-bold text-orange-800 text-lg mb-2">
+                        זוהו קבוצות גדולות מגודל השולחן
+                      </h3>
+                      <p className="text-sm text-orange-700 mb-4">
+                        הקבוצות הבאות גדולות מ-{seatCount} מוזמנים. איך תרצה לטפל בהן?
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    {oversizedGroups.map((group, idx) => {
+                      const key = `${group.side}_${group.relation}`;
+                      return (
+                        <div key={idx} className="bg-white rounded-lg p-4 border border-orange-200">
+                          <div className="font-bold text-orange-900 mb-2">
+                            {group.side === 'bride' ? '🎀 צד הכלה' : '🤵 צד החתן'} - {group.relation}
+                          </div>
+                          <div className="text-sm text-orange-800 mb-3">
+                            {group.total_guests} מוזמנים (גדול מגודל השולחן: {seatCount})
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <label className="flex items-center gap-3 p-2 bg-orange-50 rounded cursor-pointer hover:bg-orange-100">
+                              <input
+                                type="radio"
+                                name={`oversized_${key}`}
+                                value="split"
+                                checked={oversizedDecisions[key] === 'split'}
+                                onChange={() => handleOversizedDecision(group.side, group.relation, 'split')}
+                                className="w-4 h-4"
+                              />
+                              <span className="text-sm">פצל למספר שולחנות רגילים ({seatCount} מקומות כל אחד)</span>
+                            </label>
+
+                            <label className="flex items-center gap-3 p-2 bg-orange-50 rounded cursor-pointer hover:bg-orange-100">
+                              <input
+                                type="radio"
+                                name={`oversized_${key}`}
+                                value="bigger_table"
+                                checked={oversizedDecisions[key] === 'bigger_table'}
+                                onChange={() => handleOversizedDecision(group.side, group.relation, 'bigger_table')}
+                                className="w-4 h-4"
+                              />
+                              <span className="text-sm">שים בשולחן אביר אחד גדול (22 מקומות)</span>
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -384,7 +479,13 @@
                         <div className="text-sm text-green-700">הקובץ נטען בהצלחה</div>
                       </div>
                       <button 
-                        onClick={(e) => { e.stopPropagation(); setFile(null); setShowParentDecision(false); }}
+                        onClick={(e) => { 
+                          e.stopPropagation(); 
+                          setFile(null); 
+                          setShowParentDecision(false);
+                          setOversizedGroups([]);
+                          setOversizedDecisions({});
+                        }}
                         className="absolute top-2 left-2 text-xs text-red-500 hover:text-red-700 font-medium px-2 py-1 bg-white rounded shadow-sm"
                       >
                         הסר
@@ -454,7 +555,7 @@
                  {status === 'error' && (
                     <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
                        <p className="text-sm text-red-700">
-                         ⚠️ אירעה שגיאה. וודא שהשרת רץ (backend.py) ושהקובץ תקין.
+                         ⚠️ אירעה שגיאה. ווידא שהשרת רץ (backend.py) ושהקובץ תקין.
                        </p>
                     </div>
                  )}
