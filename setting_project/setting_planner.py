@@ -1,3 +1,13 @@
+# ===============================
+# Imports
+# ===============================
+# Flask – backend web framework
+# CORS – allow frontend requests from other domains
+# pandas – Excel/CSV processing
+# defaultdict – grouping helper
+# os / io / json – filesystem & data handling
+# datetime – timestamping uploaded files
+
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import pandas as pd
@@ -7,92 +17,134 @@ import io
 import json
 from datetime import datetime
 
+
+# ===============================
+# Global Configuration
+# ===============================
+
+# Flag to control whether family members can be split
 NO_FAMILY_SPLIT = True
 
 app = Flask(__name__)
 CORS(app)
 
+# Folders for uploaded input files and generated output files
 UPLOAD_FOLDER = 'uploads'
 OUTPUT_FOLDER = 'outputs'
+
+# Ensure folders exist on server startup
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 
+# =====================================================
+# Excel Parsing
+# =====================================================
 def read_and_split_excel(file_path, sheet_name="רשימת מוזמנים"):
     """
-    קריאת קובץ אקסל/CSV וחלוקה לשני DataFrames (צד כלה וצד חתן)
+    Reads an Excel or CSV guest list and splits it into:
+    - Bride side DataFrame
+    - Groom side DataFrame
+
+    The function:
+    1. Locates the columns titled:
+       'הצד של הכלה' and 'הצד של החתן'
+    2. Extracts the relevant columns for each side
+    3. Cleans empty rows and missing names
     """
+
+    # Load file depending on extension
     if file_path.endswith('.csv'):
         df = pd.read_csv(file_path, header=None)
     else:
         df = pd.read_excel(file_path, sheet_name=sheet_name, header=None)
-    
+
     bride_col = None
     groom_col = None
     title_row_idx = None
-    
+
+    # Search for the columns that mark bride/groom sections
     for r_idx, row in df.iterrows():
         row_values = row.astype(str).tolist()
-        
+
         for c_idx, val in enumerate(row_values):
             if "הצד של הכלה" in val:
                 bride_col = c_idx
                 title_row_idx = r_idx
             if "הצד של החתן" in val:
                 groom_col = c_idx
-                title_row_idx = r_idx 
+                title_row_idx = r_idx
 
         if bride_col is not None and groom_col is not None:
             break
-            
+
     if bride_col is None or groom_col is None:
         raise ValueError("לא נמצאו הכותרות 'הצד של הכלה' ו'הצד של החתן' בקובץ")
-    
+
+    # Row containing column names (e.g. שם מלא, קרבה, מוזמנים)
     headers_row_idx = title_row_idx + 1
-    
-    bride_df = df.iloc[headers_row_idx+1:, bride_col:groom_col].copy()
+
+    # Extract bride side
+    bride_df = df.iloc[headers_row_idx + 1:, bride_col:groom_col].copy()
     bride_df.columns = df.iloc[headers_row_idx, bride_col:groom_col].tolist()
-    
-    groom_df = df.iloc[headers_row_idx+1:, groom_col:].copy()
+
+    # Extract groom side
+    groom_df = df.iloc[headers_row_idx + 1:, groom_col:].copy()
     groom_df.columns = df.iloc[headers_row_idx, groom_col:].tolist()
-    
+
+    # Normalize column names
     bride_df.columns = bride_df.columns.astype(str).str.strip()
     groom_df.columns = groom_df.columns.astype(str).str.strip()
-    
+
+    # Remove fully empty rows
     bride_df = bride_df.dropna(how='all')
     groom_df = groom_df.dropna(how='all')
-    
+
+    # Ensure guests have names
     if 'שם מלא' in bride_df.columns:
         bride_df = bride_df[bride_df['שם מלא'].notna()]
-    
+
     if 'שם מלא' in groom_df.columns:
         groom_df = groom_df[groom_df['שם מלא'].notna()]
 
     return bride_df, groom_df
 
 
+# =====================================================
+# Filtering Helpers
+# =====================================================
 def apply_filters(df, filters):
     """
-    החלת פילטרים על DataFrame
+    Applies column-based filters to a DataFrame.
+    Example:
+    filters = {'קרבה': ['חברים', 'משפחה']}
     """
     filtered_df = df.copy()
-    
+
     for column, values in filters.items():
         if column in filtered_df.columns and values:
             filtered_df = filtered_df[filtered_df[column].isin(values)]
-    
+
     return filtered_df.reset_index(drop=True)
 
+
 def find_oversized_groups(df, table_size):
+    """
+    Detects relation groups that exceed the table size
+    (excluding parents).
+    Used to ask the user how to handle them.
+    """
     overSized = []
 
-    if df.empty or 'קרבה' not in df.columns :
+    if df.empty or 'קרבה' not in df.columns:
         return overSized
-    
-    grouped =df.groupby('קרבה', dropna=False)
 
-    for relation , group in grouped :
-        if relation in ['משפחה אמא','משפחה אבא']: continue
+    grouped = df.groupby('קרבה', dropna=False)
+
+    for relation, group in grouped:
+        # Parents are handled separately
+        if relation in ['משפחה אמא', 'משפחה אבא']:
+            continue
 
         total_guests = int(group['מוזמנים'].fillna(1).astype(int).sum())
 
@@ -100,162 +152,117 @@ def find_oversized_groups(df, table_size):
             overSized.append({
                 'relation': relation,
                 'total_guests': total_guests,
-                'guests' : group['שם מלא'].tolist()
+                'guests': group['שם מלא'].tolist()
             })
+
     return overSized
 
 
-def group_into_tables(df, table_size, aba_preference='separate', ima_preference='separate',  oversized_decisions=None):
+# =====================================================
+# Seating Logic
+# =====================================================
+def group_into_tables(
+    df,
+    table_size,
+    aba_preference='separate',
+    ima_preference='separate',
+    oversized_decisions=None
+):
     """
-    Groups guests into tables. 
-    Specific logic:
-    - If Aba/Ima <= 12: Force 1 regular table (even if table_size is 10).
-    - If Aba/Ima 13-22: Check preference (Knight vs Separate).
-    - Else: Standard separate tables.
+    Core seating algorithm.
+
+    Rules:
+    - Parent families (אבא / אמא) have special handling
+    - ≤12 guests → always one table
+    - 13–22 guests → user decides (Knight vs Separate)
+    - Oversized non-parent groups may be forced into Knight tables
     """
+
     if df.empty:
         return []
-    
-    tables = []
-    table_number = 1
 
+    tables = []
+    current_table_num = 1
+
+    # Map relation → user decision
     oversized_config = {}
     if oversized_decisions:
         for decision in oversized_decisions:
-            oversized_config[decision['relation']] = decision['action']
+            if 'relation' in decision and 'action' in decision:
+                oversized_config[decision['relation']] = decision['action']
 
-    for relation, group in grouped:
-        total_guests = int(group_df['מוזמנים'].fillna(1).astype(int).sum())
+    def add_to_tables(guest_list, relation_name, is_knight=False):
+        """
+        Internal helper to append a table to the results list.
+        """
+        nonlocal current_table_num
 
-        if relation in oversized_config:
-            action = oversized_config[relation]
+        names = ', '.join([str(g['name']) for g in guest_list])
+        total = sum([g['count'] for g in guest_list])
 
-            if action == 'bigger_table':
-                all_names = group['שם מלא'].tolist()
-            tables.append({
-                'מספר שולחן': f'אביר {table_number}',
-                'סוג שולחן': 'אביר',
-                'קרבה': relation,
-                'שמות מוזמנים': ', '.join(all_names),
-                'כמות מוזמנים בשולחן': total_guests
-            })
-            table_number += 1
+        table_label = f"אביר {current_table_num}" if is_knight else current_table_num
+
+        tables.append({
+            'מספר שולחן': table_label,
+            'סוג שולחן': 'אביר' if is_knight else 'רגיל',
+            'קרבה': relation_name,
+            'שמות מוזמנים': names,
+            'כמות מוזמנים בשולחן': total
+        })
+
+        current_table_num += 1
+
+    # -------------------------------
+    # PART 1: Parents (Aba & Ima)
+    # -------------------------------
+    for parent_type, pref in [('משפחה אבא', aba_preference), ('משפחה אמא', ima_preference)]:
+        parent_df = df[df['קרבה'] == parent_type]
+        if parent_df.empty:
             continue
-    
-    # helper function to process a specific family group
-    def process_special_group(group_name, preference, current_table_number):
-        group_df = df[df['קרבה'] == group_name]
-        if group_df.empty:
-            return [], current_table_number
 
-        group_count = int(group_df['מוזמנים'].fillna(1).astype(int).sum())
-        all_names = group_df['שם מלא'].tolist()
-        new_tables = []
+        total_count = int(parent_df['מוזמנים'].fillna(1).astype(int).sum())
+        all_guests = [{'name': r['שם מלא'], 'count': int(r['מוזמנים'] or 1)}
+                      for _, r in parent_df.iterrows()]
 
-        # Logic 1: Small group (<= 12) -> Force 1 table
-        if group_count <= 12:
-            new_tables.append({
-                'מספר שולחן': current_table_number,
-                'סוג שולחן': 'רגיל',
-                'קרבה': group_name,
-                'שמות מוזמנים': ', '.join(all_names),
-                'כמות מוזמנים בשולחן': group_count
-            })
-            current_table_number += 1
-
-        # Logic 2: Medium group (13-22) AND user wants Knight -> Force 1 Knight table
-        elif 12 < group_count <= 22 and preference == 'knight':
-            new_tables.append({
-                'מספר שולחן': f'אביר {current_table_number}',
-                'סוג שולחן': 'אביר',
-                'קרבה': group_name,
-                'שמות מוזמנים': ', '.join(all_names),
-                'כמות מוזמנים בשולחן': group_count
-            })
-            current_table_number += 1
-
-        # Logic 3: Large group OR user wants separate -> Split into standard tables
+        # Force single table if small or user chose Knight
+        if total_count <= 12 or (total_count <= 22 and pref == 'knight'):
+            add_to_tables(all_guests, parent_type, is_knight=(total_count > 12))
         else:
-            current_guests = []
-            current_count = 0
-            
-            for _, row in group_df.iterrows():
-                name = row['שם מלא']
-                guests = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
-                
-                if current_count + guests > table_size and current_guests:
-                    new_tables.append({
-                        'מספר שולחן': current_table_number,
-                        'סוג שולחן': 'רגיל',
-                        'קרבה': group_name,
-                        'שמות מוזמנים': ', '.join(current_guests),
-                        'כמות מוזמנים בשולחן': current_count
-                    })
-                    current_table_number += 1
-                    current_guests = []
-                    current_count = 0
-                
-                current_guests.append(name)
-                current_count += guests
-            
-            if current_guests:
-                new_tables.append({
-                    'מספר שולחן': current_table_number,
-                    'סוג שולחן': 'רגיל',
-                    'קרבה': group_name,
-                    'שמות מוזמנים': ', '.join(current_guests),
-                    'כמות מוזמנים בשולחן': current_count
-                })
-                current_table_number += 1
-                
-        return new_tables, current_table_number
+            # Split into regular tables
+            current_batch, current_sum = [], 0
+            for guest in all_guests:
+                if current_sum + guest['count'] > table_size and current_batch:
+                    add_to_tables(current_batch, parent_type)
+                    current_batch, current_sum = [], 0
+                current_batch.append(guest)
+                current_sum += guest['count']
 
-    # 1. Process Aba
-    aba_tables, table_number = process_special_group('משפחה אבא', aba_preference, table_number)
-    tables.extend(aba_tables)
+            if current_batch:
+                add_to_tables(current_batch, parent_type)
 
-    # 2. Process Ima
-    ima_tables, table_number = process_special_group('משפחה אמא', ima_preference, table_number)
-    tables.extend(ima_tables)
+    # -------------------------------
+    # PART 2: Everyone else
+    # -------------------------------
+    others_df = df[~df['קרבה'].isin(['משפחה אבא', 'משפחה אמא'])]
 
-    # 3. Process Everyone Else
-    # Exclude Aba and Ima from the general pool
-    other_df = df[~df['קרבה'].isin(['משפחה אבא', 'משפחה אמא'])].copy()
-    grouped = other_df.groupby('קרבה', dropna=False)
+    for relation, group in others_df.groupby('קרבה', dropna=False):
+        all_guests = [{'name': r['שם מלא'], 'count': int(r['מוזמנים'] or 1)}
+                      for _, r in group.iterrows()]
 
-    for relation, group in grouped:
-        current_guests = []
-        current_count = 0
-        
-        for _, row in group.iterrows():
-            name = row['שם מלא']
-            guests = int(row['מוזמנים']) if pd.notna(row['מוזמנים']) else 1
-            
-            if current_count + guests > table_size and current_guests:
-                tables.append({
-                    'מספר שולחן': table_number,
-                    'סוג שולחן': 'רגיל',
-                    'קרבה': relation,
-                    'שמות מוזמנים': ', '.join(current_guests),
-                    'כמות מוזמנים בשולחן': current_count
-                })
-                table_number += 1
-                current_guests = []
-                current_count = 0
-            
-            current_guests.append(name)
-            current_count += guests
-        
-        if current_guests:
-            tables.append({
-                'מספר שולחן': table_number,
-                'סוג שולחן': 'רגיל',
-                'קרבה': relation,
-                'שמות מוזמנים': ', '.join(current_guests),
-                'כמות מוזמנים בשולחן': current_count
-            })
-            table_number += 1
-            
+        if oversized_config.get(relation) == 'bigger_table':
+            add_to_tables(all_guests, relation, is_knight=True)
+        else:
+            current_batch, current_sum = [], 0
+            for guest in all_guests:
+                if current_sum + guest['count'] > table_size and current_batch:
+                    add_to_tables(current_batch, relation)
+                    current_batch, current_sum = [], 0
+                current_batch.append(guest)
+                current_sum += guest['count']
+
+            if current_batch:
+                add_to_tables(current_batch, relation)
+
     return tables
 
 
