@@ -1,0 +1,10 @@
+#include "InventoryManager.h"
+#include <iostream>
+#include <string>
+#include <cstring>
+#include <thread>
+#include <vector>
+#include <sstream>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
