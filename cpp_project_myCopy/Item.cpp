@@ -18,7 +18,7 @@ string& Item::getName() {
 }
 
 
-//check if the item is available 
+//check if the item is available.
 bool Item::isAvailable() const{
     return !isBorrowed;
 }
