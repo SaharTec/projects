@@ -18,7 +18,7 @@ string recv_line(int sockfd){
         if(n <= 0){
             return " ";
         }
-        if (c == '/n'){
+        if (c == '\n'){
             break;
         }
         line += c;
@@ -27,7 +27,7 @@ string recv_line(int sockfd){
 }
 
 bool send_line(int sockfd, const string& line){
-    string msg = line + "/n";
+    string msg = line + "\n";
     int sent = send(sockfd, msg.c_str(), msg.length(),0);
     return sent > 0;
 }
