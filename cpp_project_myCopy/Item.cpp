@@ -33,10 +33,10 @@ string& Item::getBorrower() {
 //borrowed the item to the user
 void Item::borrow(const string& username){
     if(username.empty()){   //check for empty username
-        throw runtime_error("username filld can be empty!");
+        throw runtime_error("username filld can be empty");
     }
     if(isBorrowed){         //check if the item is alredy borrowed
-        throw runtime_error("this item is already borrowed!");
+        throw runtime_error("this item is already borrowed");
     }
     //update the item as borrowed
     isBorrowed = true;
