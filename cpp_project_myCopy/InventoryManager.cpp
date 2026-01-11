@@ -32,7 +32,7 @@ Item& InventoryManager::findItemById(int itemId){
 string InventoryManager::listItems(){
     lock_guard<mutex> lock(mtx);
     ostringstream oss;
-    oss << "OK LIST" << items.size() << "/n";
+    oss << "OK LIST " << items.size() << "\n";
 
     for(const auto& item: items){
         oss << item.toString() << "\n";

@@ -113,10 +113,10 @@ int main(int argc, char* argv[]) {
             break;
         }
 
-        // הצגת התשובה
+        // הצגת התשוב
         std::cout << response << std::endl;
 
-        // טיפול מיוחד ב-LIST - צריך לקרוא שורות נוספות
+        // טיפול מיוחד ב-LIST - צריך לקרוא שורות נוספות1
         if (response.find("OK LIST") == 0) {
             // חילוץ מספר הפריטים
             size_t pos = response.find("LIST") + 5;

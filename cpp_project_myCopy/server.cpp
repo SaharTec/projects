@@ -62,7 +62,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
             string comm = tokens[0];
             if (comm == "HELLO"){
 
-                if(tokens.size() < 1){
+                if(tokens.size() < 2){
                     send_line(clientSocket, "ERR PROTOCOL missing_username");
                     continue;
                 }
@@ -136,8 +136,8 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 }
 
                 try{
-                    inventory.borrowItem(itemId, username);
-                    send_line(clientSocket, "OK BORROWED" + to_string(itemId));
+                    inventory.returnItem(itemId, username);
+                    send_line(clientSocket, "OK RETURNED" + to_string(itemId));
                 }
                 catch( const exception& e){
                     string err_msg = e.what();
