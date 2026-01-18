@@ -16,7 +16,7 @@ string recv_line(int sockfd){
     while(true){
         ssize_t n = recv(sockfd, &c, 1, 0);
         if(n <= 0){
-            return " ";
+            return "";
         }
         if (c == '\n'){
             break;
@@ -42,8 +42,8 @@ vector<string> split(const string& str){
     return tokens;
 }
 
-bool contains(const std::string& str, const std::string& substring) {
-    return str.find(substring) != std::string::npos;
+bool contains(const string& str, const string& substring) {
+    return str.find(substring) != string::npos;
 }
 
 void handelClient(int clientSocket, InventoryManager& inventory){
