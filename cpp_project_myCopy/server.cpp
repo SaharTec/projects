@@ -8,6 +8,24 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <fstream>
+#include <atomic>
+using namespace std;
+
+int g_serverSock = -1;
+atomic<bool> g_running(true);
+
+void logMessage(const string& msg){
+    cout << msg << endl;
+
+    ofstream logFile("server_log.txt" , ios::app);
+    if(logFile.is_open()){
+        logFile << msg << endl;
+        logFile.close();
+    }else {
+        cerr << "Error: Unable to write to log file!" << endl;
+    }
+}
 
 //call for one line at a time
 string recv_line(int sockfd){
@@ -60,8 +78,8 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 continue;
             }
             string comm = tokens[0];
-            if (comm == "HELLO"){
 
+            if (comm == "HELLO"){
                 if(tokens.size() < 2){
                     send_line(clientSocket, "ERR PROTOCOL missing_username");
                     continue;
@@ -76,6 +94,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
 
                 authentication = true;
                 send_line(clientSocket, "OK HELLO");
+                logMessage(username + " log in");
             }
 
             else if (!authentication){
@@ -105,6 +124,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 try{
                     inventory.borrowItem(itemId, username);
                     send_line(clientSocket, "OK BORROWED" + to_string(itemId));
+                    logMessage(username + " borrowed item " + to_string(itemId));
                 }
                 catch( const exception& e){
                     string err_msg = e.what();
@@ -138,6 +158,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 try{
                     inventory.returnItem(itemId, username);
                     send_line(clientSocket, "OK RETURNED" + to_string(itemId));
+                    logMessage(username + "return item :" + to_string(itemId));
                 }
                 catch( const exception& e){
                     string err_msg = e.what();
@@ -173,6 +194,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 try{
                     inventory.waitUntilAvailable(itemId, username);
                     send_line(clientSocket, "OK AVAILABLE " + to_string(itemId));
+                    logMessage(username + " finished waiting for item " + to_string(itemId));
                 }
                 catch(const exception& e){
                     string err_msg = e.what();
