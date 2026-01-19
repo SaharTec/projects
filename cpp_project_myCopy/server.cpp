@@ -12,11 +12,11 @@
 #include <atomic>
 using namespace std;
 
-int g_serverSock = -1;
 atomic<bool> g_running(true);
-
+/**
+ * Log all the activity of the server to a txt file
+ */
 void logMessage(const string& msg){
-    cout << msg << endl;
 
     ofstream logFile("server_log.txt" , ios::app);
     if(logFile.is_open()){
@@ -27,7 +27,7 @@ void logMessage(const string& msg){
     }
 }
 
-//call for one line at a time
+// Read from the socket one char at a time until he get a new line
 string recv_line(int sockfd){
     string line;
     char c;
@@ -37,19 +37,20 @@ string recv_line(int sockfd){
             return "";
         }
         if (c == '\n'){
-            break;
+            break;  //end of a message found
         }
         line += c;
     }
     return line;
 }
-
+// Send the data eith the needed new line character
 bool send_line(int sockfd, const string& line){
     string msg = line + "\n";
     int sent = send(sockfd, msg.c_str(), msg.length(),0);
     return sent > 0;
 }
 
+// Splite the commend string ("HELLO BOB" --> ["HELLO", "BOB"])
 vector<string> split(const string& str){
     vector<string> tokens;
     istringstream iss(str);
@@ -59,17 +60,21 @@ vector<string> split(const string& str){
     }
     return tokens;
 }
-
+//check for error messages
 bool contains(const string& str, const string& substring) {
     return str.find(substring) != string::npos;
 }
 
+/**
+ * Main client handling loop. This runs in a SEPARATE THREAD for every user.
+ * this is where the protocol (HELLO, BORROW ...) is actually processed.
+ */
 void handelClient(int clientSocket, InventoryManager& inventory){
     string username;
-    bool authentication = false;
+    bool authentication = false; //prevent from the client to do action before saying hello 
 
     while(true){
-        string commend = recv_line(clientSocket);
+        string commend = recv_line(clientSocket); //wait for the client to send a commend/data
 
         try{
             vector<string> tokens = split(commend);
@@ -78,7 +83,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 continue;
             }
             string comm = tokens[0];
-
+            // --Authentication level--
             if (comm == "HELLO"){
                 if(tokens.size() < 2){
                     send_line(clientSocket, "ERR PROTOCOL missing_username");
@@ -97,10 +102,12 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 logMessage(username + " log in");
             }
 
+            // Block all other commands if not logged in
             else if (!authentication){
                 send_line(clientSocket, "ERR STATE not_authenticated");
             }
 
+            // --Main commands--
             else if (comm == "LIST"){
                 string response = inventory.listItems();
                 send(clientSocket, response.c_str(), response.length(), 0);
@@ -121,15 +128,15 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                     continue;
                 }
 
-                try{
+                try{   //throw an exception if item is taken
                     inventory.borrowItem(itemId, username);
                     send_line(clientSocket, "OK BORROWED" + to_string(itemId));
-                    logMessage(username + " borrowed item " + to_string(itemId));
+                    logMessage(username + " borrowed item: " + to_string(itemId));
                 }
                 catch( const exception& e){
                     string err_msg = e.what();
                     if(contains(err_msg, "not found")){
-                        send_line(clientSocket, " ERR NOT_FOUNT item");
+                        send_line(clientSocket, " ERR NOT_FOUND item");
                         continue;
                     }
                     else if (contains(err_msg, "already borrowed")){
@@ -158,13 +165,13 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 try{
                     inventory.returnItem(itemId, username);
                     send_line(clientSocket, "OK RETURNED" + to_string(itemId));
-                    logMessage(username + "return item :" + to_string(itemId));
+                    logMessage(username + " return item: " + to_string(itemId));
                 }
                 catch( const exception& e){
                     string err_msg = e.what();
                     
                     if(contains(err_msg, "not found")){
-                        send_line(clientSocket, " ERR NOT_FOUNT item");
+                        send_line(clientSocket, " ERR NOT_FOUND item");
                         continue;
                     }
 
@@ -172,11 +179,15 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                         send_line(clientSocket, "ERR PERMISSION not_owner");
                         continue;
                     }
+                    else {
+                        send_line(clientSocket, "ERR SERVER " + err_msg);
+                    }
                 }
 
             }
 
             else if (comm == "WAIT"){
+                // It pauses this thread until the item returns.
                if (tokens.size() < 2){
                     send_line(clientSocket, "ERR PROTOCOL invalid_id");
                     continue;
@@ -193,6 +204,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                 
                 try{
                     inventory.waitUntilAvailable(itemId, username);
+                    //stop the waiting for the item (the item is free again)
                     send_line(clientSocket, "OK AVAILABLE " + to_string(itemId));
                     logMessage(username + " finished waiting for item " + to_string(itemId));
                 }
@@ -212,6 +224,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
 
             else if (comm == "QUIT") {
                 send_line(clientSocket, "OK BYE");
+                logMessage(username + " disconnected");
                 break;
             }
             
@@ -222,7 +235,7 @@ void handelClient(int clientSocket, InventoryManager& inventory){
             return ;
         }
     }
-    close(clientSocket);
+    close(clientSocket);  // close the socket when the thread ends
 }
 
 int main(int argc, char* argv[]){
@@ -253,7 +266,7 @@ int main(int argc, char* argv[]){
     struct sockaddr_in serverAddr;
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
-    serverAddr.sin_addr.s_addr = INADDR_ANY;
+    serverAddr.sin_addr.s_addr = INADDR_ANY; //Listen on all network interfaces
     serverAddr.sin_port = htons(port);
 
     if (bind(serverSock, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
@@ -271,7 +284,7 @@ int main(int argc, char* argv[]){
     cout << "Server is running and listening on port " << port << endl;
 
     
-    while (true) {
+    while (true) {  //Main loop accepts new connections
         struct sockaddr_in clientAddr;
         socklen_t clientLen = sizeof(clientAddr);
         
@@ -281,7 +294,7 @@ int main(int argc, char* argv[]){
             continue;
         }
 
-        
+        // Create a detached thread so main loop can go back to accepting new people immediately
         thread clientThread(handelClient, clientSock, ref(inventory));
         clientThread.detach();  
     }

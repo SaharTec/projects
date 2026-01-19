@@ -4,15 +4,16 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
+using namespace std;
 
-// פונקציה לקריאת שורה אחת מה-socket
-std::string recvLine(int sockfd) {
-    std::string line;
+// Read from the socket one char at a time until he get a new line
+string recvLine(int sockfd) {
+    string line;
     char c;
     while (true) {
         int n = recv(sockfd, &c, 1, 0);
         if (n <= 0) {
-            return "";  // שגיאה או ניתוק
+            return ""; 
         }
         if (c == '\n') {
             break;
@@ -22,17 +23,17 @@ std::string recvLine(int sockfd) {
     return line;
 }
 
-// פונקציה לשליחת שורה (מוסיפה \n אוטומטית)
-bool sendLine(int sockfd, const std::string& line) {
-    std::string msg = line + "\n";
+// Send the data eith the needed new line character
+bool sendLine(int sockfd, const string& line) {
+    string msg = line + "\n";
     int sent = send(sockfd, msg.c_str(), msg.length(), 0);
     return sent > 0;
 }
 
-// המרה בטוחה של port למספר
-int parsePort(const std::string& portStr) {
+
+int parsePort(const string& portStr) {
     try {
-        int port = std::stoi(portStr);
+        int port = stoi(portStr);
         if (port <= 0 || port > 65535) {
             return -1;
         }
@@ -43,112 +44,111 @@ int parsePort(const std::string& portStr) {
 }
 
 int main(int argc, char* argv[]) {
-    // בדיקת פרמטרים
     if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <server_ip> <server_port>" << std::endl;
+        cerr << "Usage: " << argv[0] << " <server_ip> <server_port>" << std::endl;
         return 1;
     }
 
-    std::string serverIp = argv[1];
+    string serverIp = argv[1];
     int port = parsePort(argv[2]);
     
     if (port == -1) {
-        std::cerr << "Error: Invalid port number" << std::endl;
+        cerr << "Error: Invalid port number" << endl;
         return 1;
     }
 
-    // יצירת socket
+    // create socket
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
-        std::cerr << "Error: Failed to create socket" << std::endl;
+        cerr << "Error: Failed to create socket" << endl;
         return 1;
     }
 
-    // הגדרת כתובת השרת
+    // settenig for server
     struct sockaddr_in serverAddr;
     memset(&serverAddr, 0, sizeof(serverAddr));
     serverAddr.sin_family = AF_INET;
     serverAddr.sin_port = htons(port);
 
     if (inet_pton(AF_INET, serverIp.c_str(), &serverAddr.sin_addr) <= 0) {
-        std::cerr << "Error: Invalid IP address" << std::endl;
+        cerr << "Error: Invalid IP address" << endl;
         close(sockfd);
         return 1;
     }
 
-    // התחברות לשרת
+    // connection to the server
     if (connect(sockfd, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) < 0) {
-        std::cerr << "Error: Failed to connect to server" << std::endl;
+        cerr << "Error: Failed to connect to server" << endl;
         close(sockfd);
         return 1;
     }
 
-    std::cout << "Connected to server at " << serverIp << ":" << port << std::endl;
-    std::cout << "Type your commands (HELLO, LIST, BORROW, RETURN, WAIT, QUIT):" << std::endl;
+    cout << "Connected to server at " << serverIp << ":" << port << endl;
+    cout << "Type your commands (HELLO, LIST, BORROW, RETURN, WAIT, QUIT):" << endl;
 
-    // לולאה אינטראקטיבית
-    std::string userInput;
+    
+    string userInput;
     while (true) {
-        std::cout << "> ";
+        cout << "> ";
         
-        // קריאת פקודה מהמשתמש
-        if (!std::getline(std::cin, userInput)) {
-            break;  // EOF או שגיאה
+        // getting the commend from the user
+        if (!getline(cin, userInput)) {
+            break;
         }
 
         if (userInput.empty()) {
             continue;
         }
 
-        // שליחת הפקודה לשרת
+        // sending commend to the server
         if (!sendLine(sockfd, userInput)) {
-            std::cerr << "Error: Failed to send command" << std::endl;
+            cerr << "Error: Failed to send command" << endl;
             break;
         }
 
-        // קריאת תשובה מהשרת
-        std::string response = recvLine(sockfd);
+        // reading answer from the server
+        string response = recvLine(sockfd);
         if (response.empty()) {
-            std::cout << "Disconnected from server" << std::endl;
+            cout << "Disconnected from server" << endl;
             break;
         }
 
-        // הצגת התשוב
-        std::cout << response << std::endl;
+        // show the response
+        cout << response << endl;
 
-        // טיפול מיוחד ב-LIST - צריך לקרוא שורות נוספות1
+        // reading the lines of the LIST
         if (response.find("OK LIST") == 0) {
-            // חילוץ מספר הפריטים
+            // getting the number of the items
             size_t pos = response.find("LIST") + 5;
             int count = 0;
             try {
-                count = std::stoi(response.substr(pos));
+                count = stoi(response.substr(pos));
             } catch (...) {
-                std::cerr << "Error: Invalid LIST response format" << std::endl;
+                cerr << "Error: Invalid LIST response format" << endl;
                 continue;
             }
 
-            // קריאת כל הפריטים
+            // reading all the items
             for (int i = 0; i < count; i++) {
-                std::string itemLine = recvLine(sockfd);
+                string itemLine = recvLine(sockfd);
                 if (itemLine.empty()) {
-                    std::cout << "Disconnected from server" << std::endl;
+                    cout << "Disconnected from server" << endl;
                     close(sockfd);
                     return 0;
                 }
-                std::cout << itemLine << std::endl;
+                cout << itemLine << endl;
             }
         }
 
-        // בדיקה אם זה QUIT
+        
         if (userInput == "QUIT" || response.find("OK BYE") == 0) {
             break;
         }
     }
 
-    // סגירת החיבור
+    // close the conection 
     close(sockfd);
-    std::cout << "Connection closed" << std::endl;
+    cout << "Connection closed" << endl;
     
     return 0;
 }

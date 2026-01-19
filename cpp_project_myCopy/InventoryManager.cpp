@@ -2,6 +2,7 @@
 #include <sstream>
 using namespace std;
 
+// Initialize the list of items
 InventoryManager::InventoryManager(){
     items.emplace_back(1, "Camera");
     items.emplace_back(2, "Tripod");
@@ -30,6 +31,7 @@ Item& InventoryManager::findItemById(int itemId){
 }
 
 string InventoryManager::listItems(){
+    // lock the mutex so other client cant borrow/return items while we are reading the list.
     lock_guard<mutex> lock(mtx);
     ostringstream oss;
     oss << "OK LIST " << items.size() << "\n";
@@ -37,14 +39,14 @@ string InventoryManager::listItems(){
     for(const auto& item: items){
         oss << item.toString() << "\n";
     }
-    return oss.str();
+    return oss.str();  //lock automatically releases here
 }
 
 void InventoryManager::borrowItem(int itemId, const string& username){
-    lock_guard<mutex> lock(mtx);
+    lock_guard<mutex> lock(mtx); // lock to prevent 2 clint to borrow the same item at the same time
     Item& item = findItemById(itemId);
 
-    item.borrow(username);
+    item.borrow(username);  //checking "isBorrowed" is inside item.borrow()
 }
 
 void InventoryManager::returnItem(int itemId, const string& username){
@@ -53,13 +55,13 @@ void InventoryManager::returnItem(int itemId, const string& username){
 
     item.returnBack(username);
 
-    cv.notify_all();
+    cv.notify_all(); //if some client waiting for an item this wakes them up to check if the item they want is free.
 }
 
 void InventoryManager::waitUntilAvailable(int itemId, const string& username){
     unique_lock<mutex> lock(mtx);
     Item& item = findItemById(itemId);
-
+    // prevent the clients for wait for an item they are holding.
     if(!item.isAvailable() && item.getBorrower() == username){
         throw runtime_error("Deadlock: user is waiting for their own item");
     }
