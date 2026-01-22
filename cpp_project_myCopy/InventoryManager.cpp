@@ -46,6 +46,10 @@ void InventoryManager::borrowItem(int itemId, const string& username){
     lock_guard<mutex> lock(mtx); // lock to prevent 2 clint to borrow the same item at the same time
     Item& item = findItemById(itemId);
 
+    if (!item.isAvailable()) {
+        throw runtime_error("already borrowed by " + item.getBorrower());
+    }
+
     item.borrow(username);  //checking "isBorrowed" is inside item.borrow()
 }
 

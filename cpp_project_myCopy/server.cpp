@@ -140,7 +140,8 @@ void handelClient(int clientSocket, InventoryManager& inventory){
                         continue;
                     }
                     else if (contains(err_msg, "already borrowed")){
-                        send_line(clientSocket, " ERR UNAVAILABLE borrowed_by=" + username);
+                        string owner = err_msg.substr(20);
+                        send_line(clientSocket, " ERR UNAVAILABLE borrowed_by= " + owner);
                         continue;
                     }
                 }

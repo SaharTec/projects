@@ -1,0 +1,21 @@
+BOB log in
+BOB borrowed item: 1
+MAX log in
+BOB return item: 1
+MAX finished waiting for item 1
+BOB disconnected
+SAHAR log in
+SAHAR borrowed item: 3
+MAX borrowed item: 2
+MAX log in
+BOB log in
+BOB borrowed item: 1
+BOB return item: 1
+MAX borrowed item: 1
+BOB disconnected
+SAHAR log in
+MAX disconnected
+MAX log in
+MAX return item: 1
+SAHAR disconnected
+MAX disconnected
